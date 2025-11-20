@@ -68,7 +68,7 @@ void loop() {
   }
   else if (button == "LEFT") { // Turn Left
     lcd.print("Turn Left");
-    analogWrite(ENA, motorSpeed); // slow left motor
+    analogWrite(ENA, motorSpeed); 
     analogWrite(ENB, motorSpeed/2);
     digitalWrite(IN1, LOW);  
     digitalWrite(IN2, HIGH);
@@ -78,7 +78,7 @@ void loop() {
   else if (button == "RIGHT") { // Turn Right
     lcd.print("Turn Right");
     analogWrite(ENA, motorSpeed/2);  
-    analogWrite(ENB, motorSpeed); // slow right motor
+    analogWrite(ENB, motorSpeed); 
     digitalWrite(IN1, HIGH);   
     digitalWrite(IN2, LOW);
     digitalWrite(IN3, LOW);  
