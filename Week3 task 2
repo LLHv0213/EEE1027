@@ -1,0 +1,191 @@
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <LiquidCrystal.h>
+
+LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
+Adafruit_MPU6050 mpu;
+
+// Motor pins
+const int ENA = 11;
+const int ENB = 3;
+const int IN1 = 1;
+const int IN2 = 2;
+const int IN3 = 12;
+const int IN4 = 13;
+
+// FSM states
+enum State {FORWARD, CLIMBING, WAIT_TOP, TURNING, FORWARD_AFTER_TURN, DONE};
+State state = FORWARD;
+
+// Pitch calibration
+float pitch_offset = 0;
+
+// Max pitch
+float maxPitch = 0;
+
+// Gyro integration for turn
+float angleZ = 0;
+unsigned long lastMicros = 0;
+
+// LCD update
+unsigned long lastLCD = 0;
+
+// Timing
+unsigned long stateTime = 0;
+
+// Flag to indicate DONE LCD update
+bool maxDisplayed = false;
+
+// ----------------- MOTOR FUNCTIONS -----------------
+void moveForward(int speed) {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+  analogWrite(ENA, speed);
+  analogWrite(ENB, speed);
+}
+
+void turn(int speed) {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+  analogWrite(ENA, speed);
+  analogWrite(ENB, speed);
+}
+
+void stopMotor() {
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+}
+
+// ----------------- SETUP -----------------
+void setup() {
+  lcd.begin(16,2);
+  Wire.begin();
+
+  pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+  pinMode(ENA, OUTPUT); pinMode(ENB, OUTPUT);
+
+  if (!mpu.begin()) {
+    lcd.print("MPU FAIL");
+    while(1);
+  }
+
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_10_HZ);
+
+  delay(1000); // stabilize
+
+  // pitch calibration
+  sensors_event_t a, g, temp;
+  float sum = 0;
+  for(int i=0;i<100;i++){
+    mpu.getEvent(&a,&g,&temp);
+    float pitch = atan2(a.acceleration.x, a.acceleration.z)*57.3;
+    sum += pitch;
+    delay(10);
+  }
+  pitch_offset = sum/100.0;
+  lastMicros = micros();
+}
+
+// ----------------- LOOP -----------------
+void loop() {
+  sensors_event_t a,g,temp;
+  mpu.getEvent(&a,&g,&temp);
+
+  float pitch = atan2(a.acceleration.x, a.acceleration.z)*57.3 - pitch_offset;
+
+  // Update max pitch
+  if(pitch > maxPitch) maxPitch = pitch;
+
+  unsigned long now = millis();
+
+  // ----------------- LCD UPDATE -----------------
+  if(now - lastLCD > 200){
+    lcd.setCursor(0,0);
+    if(state != DONE){
+      lcd.print("Pitch:");
+      lcd.print(pitch,1);
+      lcd.print((char)223);
+      lcd.print("    ");
+    } else {
+      if(!maxDisplayed){
+        lcd.setCursor(0,0);
+        lcd.print("MaxPitch:");
+        lcd.print(maxPitch,1);
+        lcd.print((char)223);
+        lcd.print("    ");
+        maxDisplayed = true;
+      }
+    }
+    lastLCD = now;
+  }
+
+  // ----------------- FSM -----------------
+  switch(state){
+    case FORWARD:
+      moveForward(100);
+      if(pitch > 20){  // ramp detected
+        state = CLIMBING;
+      }
+      break;
+
+    case CLIMBING:
+      moveForward(200); // full power
+      if(pitch < 5){ // reached top
+        moveForward(100);
+        delay(100);
+        stopMotor();
+        stateTime = now; // start 4s timer
+        state = WAIT_TOP;
+      }
+      break;
+
+    case WAIT_TOP:
+      stopMotor();
+      if(now - stateTime >= 4000){ // wait 4 seconds
+        angleZ = 0;
+        lastMicros = micros();
+        state = TURNING;
+      }
+      break;
+
+    case TURNING:
+      {
+        unsigned long nowMicros = micros();
+        float dt = (nowMicros - lastMicros)/1e6;
+        lastMicros = nowMicros;
+
+        float gz = g.gyro.z*57.3;
+        if(abs(gz)<2) gz=0;
+        angleZ += gz*dt;
+
+        if(angleZ < 345){ // keep turning
+          turn(200);
+        } else {
+          stopMotor();
+          stateTime = now;
+          state = FORWARD_AFTER_TURN;
+        }
+      }
+      break;
+
+    case FORWARD_AFTER_TURN:
+      moveForward(200);
+      if(now - stateTime >= 1000){ // move forward 3s
+        stopMotor();
+        state = DONE;
+      }
+      break;
+
+    case DONE:
+      stopMotor();
+      break;
+  }
+}
